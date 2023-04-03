@@ -57,7 +57,7 @@ express.get('/export/:from/:to', async (req, res) => {
         let count = 1;
         const dates = dateRange(from, to);
         
-        for (let date of dates) { // BOSHLASH
+        for (let date of dates) {
             const parts = date.split('-');
             datee = `${parts[2]}-${parts[1]}-${parts[0]}`;
             
