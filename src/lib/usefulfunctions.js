@@ -61,6 +61,10 @@ function extractString(str) {
     return str.replace(/[0-9]/g, '');
 }
 
+function splitDate(str) {
+    return str.split('T')[1].split('+')[0];
+}
+
 module.exports = {
     daysInThisMonth,
     getTimeDifference,
@@ -68,4 +72,5 @@ module.exports = {
     getDaysBetweenDates,
     dateRange,
     extractString,
+    splitDate
 };

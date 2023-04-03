@@ -1,4 +1,4 @@
-const { getTimeDifference, sumTimes, getDaysBetweenDates, dateRange, extractString } = require('../lib/usefulfunctions');
+const { getTimeDifference, sumTimes, getDaysBetweenDates, dateRange, extractString, splitDate } = require('../lib/usefulfunctions');
 const { uniqRow } = require('../lib/pg');
 const ExcelJS = require('exceljs');
 const express = require('express').Router();
@@ -7,7 +7,10 @@ const moment = require('moment');
 express.get('/export/:from/:to', async (req, res) => {
     const { from, to} = req.params
     
-    const workbook = new ExcelJS.Workbook();
+    const workbook = new ExcelJS.Workbook({
+        xlsx: undefined
+    });
+    
     workbook.creator = 'Shodiyev Fayzulloh';
     workbook.lastModifiedBy = 'nodejs';
     workbook.created = new Date();
@@ -15,12 +18,8 @@ express.get('/export/:from/:to', async (req, res) => {
     workbook.lastPrinted = new Date();
     
     const worksheet = workbook.addWorksheet('Oylik xisobot');
-    new ExcelJS.stream.xlsx.WorkbookWriter({
-        filename: 'demo_hidden_columns_bug.xlsx',
-        useStyles: true,
-    });
-    
-    let users = await uniqRow(`select * from users `);
+
+    let users = await uniqRow(`select * from users`);
     
     const columns = [
         { header: 'ID', key: 'id', width: 5 },
@@ -52,12 +51,13 @@ express.get('/export/:from/:to', async (req, res) => {
     let counter = 1;
     for (const user of users.rows) {
         const obj = {};
-        obj.id = counter;
+        obj.id = user.user_id;
         obj.name = user.user_fullname;
         
         let count = 1;
         const dates = dateRange(from, to);
-        for (let date of dates) {
+        
+        for (let date of dates) { // BOSHLASH
             const parts = date.split('-');
             datee = `${parts[2]}-${parts[1]}-${parts[0]}`;
             
@@ -83,50 +83,128 @@ express.get('/export/:from/:to', async (req, res) => {
             `;
             const leave = (await uniqRow(queryLeave, user.user_id, datee)).rows[0];
             
-            if (come && !leave) {
-                const queryFirstLeave = `
-                select
+            const dateObj = new Date(datee);
+            dateObj.setDate(dateObj.getDate() + 1);
+            const newDateStr = dateObj.toISOString().substring(0, 10);
+            const queryNextCome = `
+            select 
+            *
+            from workedtimes 
+            where user_id = $1 and
+            to_timestamp(regexp_replace(workedtime_time, '\\+(\\d{2})(\\d{2})$', ' $1:$2'), 'YYYY-MM-DD') = $2 and
+            workedtime_action = 'checkIn'
+            order by workedtime_time asc;`
+            const nextCome = (await uniqRow(queryNextCome, user.user_id, newDateStr)).rows[0];
+            
+            let lastLeaveAfterCome
+            if (nextCome) {
+                const queryLastLeaveAfterCome = `
+                select 
                 *
-                from workedtimes
+                from workedtimes 
                 where user_id = $1 and
-                EXTRACT('Day' FROM workedtime_time::timestamp(0)) > $2 and
+                to_timestamp(regexp_replace(workedtime_time, '\\+(\\d{2})(\\d{2})$', ' $1:$2'), 'YYYY-MM-DD') = $2 and
+                workedtime_time < $3 and
                 workedtime_action = 'checkOut'
-                order by workedtime_time asc`;
-                const firstLeave = (await uniqRow(queryFirstLeave, user.user_id, come.workedtime_time.split('-')[2].split('T')[0])).rows[0];
+                order by workedtime_time asc;`
+                lastLeaveAfterCome = (await uniqRow(queryLastLeaveAfterCome, user.user_id, newDateStr, nextCome.workedtime_time)).rows[0];
+            }
+            
+            const queryNextLatestLeave = `
+            select 
+            *
+            from workedtimes 
+            where user_id = $1 and
+            to_timestamp(regexp_replace(workedtime_time, '\\+(\\d{2})(\\d{2})$', ' $1:$2'), 'YYYY-MM-DD') = $2 and
+            workedtime_action = 'checkOut'
+            order by workedtime_time desc;`
+            const nextLatestLeave = (await uniqRow(queryNextLatestLeave, user.user_id, newDateStr)).rows[0];
+
+            
+            if (come && leave) {
                 
-                if (firstLeave) {
-                    const queryThenFirstCome = `
-                    select
-                    *
-                    from workedtimes
-                    where user_id = $1 and
-                    EXTRACT('Day' FROM workedtime_time::timestamp(0)) >= $2 and 
-                    workedtime_action = 'checkIn'
-                    order by workedtime_time asc`;
-                    const thenFirstCome = (await uniqRow(queryThenFirstCome, user.user_id, come.workedtime_time.split('-')[2].split('T')[0])).rows[0];
-                    const check = thenFirstCome ? thenFirstCome.workedtime_time.split('-')[2].split('T')[0] < firstLeave.workedtime_time.split('-')[2].split('T')[0] : false;
-                    obj['come' + count] = come.workedtime_time.split('T')[1].split('+')[0];
-                    obj['leave' + count] = !check ? firstLeave.workedtime_time.split('T')[1].split('+')[0] : '00:00:00';
-                    obj['finishday' + count] = !check ? getTimeDifference(come.workedtime_time, firstLeave.workedtime_time ) : '00:00:00';
-                    times.push(!check ? getTimeDifference(come.workedtime_time, firstLeave.workedtime_time) : '00:00:00');
-                } else {
-                    obj['come' + count] = come.workedtime_time.split('T')[1].split('+')[0];
-                    obj['leave' + count] = '00:00:00';
-                    obj['finishday' + count] = '00:00:00';
-                }
+                const timeCome = splitDate(come.workedtime_time);
+                const timeLeave = splitDate(leave.workedtime_time);
+                const timeFinish = getTimeDifference(come.workedtime_time, leave.workedtime_time)
                 
-            } else if (come && leave) {
-                const moment1 = moment(come.workedtime_time);
-                const moment2 = moment(leave.workedtime_time);
+                obj['come' + count] = timeCome;
+                obj['leave' + count] = timeLeave;
+                obj['finishday' + count] = timeFinish;
+                times.push(getTimeDifference(come.workedtime_time, leave.workedtime_time));
                 
-                const date1 = moment1.toDate();
-                const date2 = moment2.toDate();
+            } else if (!come && leave) {
                 
-                obj['come' + count] = come.workedtime_time.split('T')[1].split('+')[0];
-                obj['leave' + count] = leave && date1 < date2 ? leave.workedtime_time.split('T')[1].split('+')[0] : '';
-                obj['finishday' + count] = date1 < date2 ? getTimeDifference(come.workedtime_time, leave.workedtime_time) : '00:00:00';
+                const timeLeave = splitDate(leave.workedtime_time)
                 
-                times.push(date1 < date2 ? getTimeDifference(come.workedtime_time, leave.workedtime_time) : '00:00:00');
+                obj['come' + count] = '';
+                obj['leave' + count] = timeLeave;
+                obj['finishday' + count] = '00:00:00';
+                
+            } else if (!come && !leave && lastLeaveAfterCome) {
+
+                const timeLeave = splitDate(lastLeaveAfterCome.workedtime_time);
+                
+                obj['come' + count] = '';
+                obj['leave' + count] = timeLeave;
+                obj['finishday' + count] = '00:00:00';
+
+            } else if (!come && !leave && nextCome && !lastLeaveAfterCome) {
+                
+                obj['come' + count] = '';
+                obj['leave' + count] = '';
+                obj['finishday' + count] = '';
+                
+            } else if (!come && !leave && !nextCome && nextLatestLeave) {
+
+                const timeLatestLeave = splitDate(nextLatestLeave.workedtime_time)
+                
+                obj['come' + count] = '';
+                obj['leave' + count] = timeLatestLeave;
+                obj['finishday' + count] = '00:00:00';
+                
+            } else if (!come && !leave && !nextCome && !nextLatestLeave) {
+                
+                obj['come' + count] = '';
+                obj['leave' + count] = '';
+                obj['finishday' + count] = '';
+                
+            } else if (come && !leave && lastLeaveAfterCome) {
+                
+                const timeCome = splitDate(come.workedtime_time)
+                const timeLeaveAfterCome = splitDate(lastLeaveAfterCome.workedtime_time)
+                
+                obj['come' + count] = timeCome;
+                obj['leave' + count] = timeLeaveAfterCome;
+                obj['finishday' + count] = getTimeDifference(come.workedtime_time, lastLeaveAfterCome.workedtime_time);
+                times.push(getTimeDifference(come.workedtime_time, lastLeaveAfterCome.workedtime_time));
+
+            } else if (come && !leave && nextCome && !lastLeaveAfterCome) {
+
+                const timeCome = splitDate(come.workedtime_time)
+                
+                obj['come' + count] = timeCome;
+                obj['leave' + count] = '';
+                obj['finishday' + count] = '00:00:00';
+
+            } else if (come && !leave && !nextCome && nextLatestLeave) {
+
+                const timeCome = splitDate(come.workedtime_time)
+                const timeNextLatestLeave = splitDate(nextLatestLeave.workedtime_time)
+                
+                
+                obj['come' + count] = timeCome;
+                obj['leave' + count] = timeNextLatestLeave;
+                obj['finishday' + count] = getTimeDifference(come.workedtime_time, nextLatestLeave.workedtime_time);
+                times.push(getTimeDifference(come.workedtime_time, nextLatestLeave.workedtime_time));
+
+            } else if (come && !leave && !nextCome && !nextLatestLeave) {
+
+                const timeCome = splitDate(come.workedtime_time)
+                
+                obj['come' + count] = timeCome;
+                obj['leave' + count] = '';
+                obj['finishday' + count] = '00:00:00';
+
             }
             
             count += 1;
@@ -141,7 +219,8 @@ express.get('/export/:from/:to', async (req, res) => {
     worksheet.addRows(rows);
     
     
-    await workbook.xlsx.writeFile('./xisobot.xls');
+    await workbook.xlsx.writeFile('./xisobot.xlsx');
+    console.log('tugadi');
 })
 
 module.exports = express
